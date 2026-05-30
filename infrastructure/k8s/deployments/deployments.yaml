@@ -1,0 +1,263 @@
+---
+# Namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: codeforge
+  labels:
+    app: codeforge-ai
+
+---
+# Backend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codeforge-backend
+  namespace: codeforge
+  labels:
+    app: codeforge-ai
+    component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: codeforge-ai
+      component: backend
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: codeforge-ai
+        component: backend
+    spec:
+      containers:
+        - name: backend
+          image: ghcr.io/your-org/codeforge-ai/backend:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: codeforge-secrets
+            - configMapRef:
+                name: codeforge-config
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: repos-storage
+              mountPath: /app/repos
+      volumes:
+        - name: repos-storage
+          persistentVolumeClaim:
+            claimName: repos-pvc
+
+---
+# Backend HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: codeforge-backend-hpa
+  namespace: codeforge
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: codeforge-backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+---
+# Frontend Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codeforge-frontend
+  namespace: codeforge
+  labels:
+    app: codeforge-ai
+    component: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: codeforge-ai
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: codeforge-ai
+        component: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: ghcr.io/your-org/codeforge-ai/frontend:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NEXT_PUBLIC_API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: codeforge-config
+                  key: API_URL
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+
+---
+# Celery Worker Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codeforge-worker
+  namespace: codeforge
+  labels:
+    app: codeforge-ai
+    component: worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: codeforge-ai
+      component: worker
+  template:
+    metadata:
+      labels:
+        app: codeforge-ai
+        component: worker
+    spec:
+      containers:
+        - name: worker
+          image: ghcr.io/your-org/codeforge-ai/backend:latest
+          command: ["celery", "-A", "app.tasks.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+          envFrom:
+            - secretRef:
+                name: codeforge-secrets
+            - configMapRef:
+                name: codeforge-config
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          volumeMounts:
+            - name: repos-storage
+              mountPath: /app/repos
+      volumes:
+        - name: repos-storage
+          persistentVolumeClaim:
+            claimName: repos-pvc
+
+---
+# Worker HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: codeforge-worker-hpa
+  namespace: codeforge
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: codeforge-worker
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60
+
+---
+# PersistentVolumeClaim for repositories
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: repos-pvc
+  namespace: codeforge
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 100Gi
+  storageClassName: nfs-client  # Adjust for your cluster
+
+---
+# ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: codeforge-config
+  namespace: codeforge
+data:
+  APP_ENV: production
+  POSTGRES_HOST: postgres-service
+  POSTGRES_PORT: "5432"
+  CHROMA_HOST: chromadb-service
+  CHROMA_PORT: "8000"
+  REDIS_URL: redis://redis-service:6379/0
+  CELERY_BROKER_URL: redis://redis-service:6379/1
+  CELERY_RESULT_BACKEND: redis://redis-service:6379/2
+  API_URL: https://api.codeforge.ai
+  REPOS_BASE_PATH: /app/repos
+
+---
+# Secret (template — fill with base64-encoded values)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: codeforge-secrets
+  namespace: codeforge
+type: Opaque
+stringData:
+  SECRET_KEY: "CHANGE-ME-IN-PRODUCTION"
+  JWT_SECRET_KEY: "CHANGE-ME-IN-PRODUCTION"
+  POSTGRES_USER: "codeforge"
+  POSTGRES_PASSWORD: "CHANGE-ME"
+  POSTGRES_DB: "codeforge_db"
+  DATABASE_URL: "postgresql+asyncpg://codeforge:CHANGE-ME@postgres-service:5432/codeforge_db"
+  OPENAI_API_KEY: "sk-CHANGE-ME"
+  GITHUB_CLIENT_ID: "CHANGE-ME"
+  GITHUB_CLIENT_SECRET: "CHANGE-ME"
+  LANGCHAIN_API_KEY: "CHANGE-ME"

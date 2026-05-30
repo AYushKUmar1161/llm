@@ -1,0 +1,86 @@
+---
+# Backend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: codeforge-backend
+  namespace: codeforge
+  labels:
+    app: codeforge-ai
+    component: backend
+spec:
+  selector:
+    app: codeforge-ai
+    component: backend
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
+
+---
+# Frontend Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: codeforge-frontend
+  namespace: codeforge
+  labels:
+    app: codeforge-ai
+    component: frontend
+spec:
+  selector:
+    app: codeforge-ai
+    component: frontend
+  ports:
+    - protocol: TCP
+      port: 3000
+      targetPort: 3000
+  type: ClusterIP
+
+---
+# Ingress
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: codeforge-ingress
+  namespace: codeforge
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    # WebSocket support
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection "upgrade";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - codeforge.ai
+        - api.codeforge.ai
+      secretName: codeforge-tls
+  rules:
+    - host: codeforge.ai
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: codeforge-frontend
+                port:
+                  number: 3000
+    - host: api.codeforge.ai
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: codeforge-backend
+                port:
+                  number: 8000
